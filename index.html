@@ -878,7 +878,7 @@
                 document.getElementById('stopCameraBtn').style.display = 'flex';
 
                 cameraActive = true;
-                scanQRCodeFromCamera();
+                video.onloadedmetadata = () => { scanQRCodeFromCamera(); };
             } catch (error) {
                 console.error('カメラアクセスエラー:', error);
                 showScanMessage('❌ カメラへのアクセスが拒否されました', 'error');
