@@ -863,26 +863,29 @@
             updateStats();
         }
 
-        async function startCamera() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment' }
-                });
-
-                videoStream = stream;
-                const video = document.getElementById('videoPreview');
-                video.srcObject = stream;
-                video.classList.remove('hidden');
-
-                document.getElementById('startCameraBtn').style.display = 'none';
-                document.getElementById('stopCameraBtn').style.display = 'flex';
-
-                cameraActive = true;
-                video.onloadedmetadata = () => { scanQRCodeFromCamera(); };
-            } catch (error) {
-                console.error('カメラアクセスエラー:', error);
-                showScanMessage('❌ カメラへのアクセスが拒否されました', 'error');
-            }
+        async function startCamera() { 
+            try { 
+                const video = document.getElementById('videoPreview'); // 1. ストリームの取得 
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
+                }); 
+                
+                videoStream = stream; 
+                video.srcObject = stream; 
+                video.classList.remove('hidden'); 
+                
+                document.getElementById('startCameraBtn').style.display = 'none'; 
+                document.getElementById('stopCameraBtn').style.display = 'flex'; // 2. 重要な修正: メタデータがロードされ、再生が開始するのを待つ // これにより、videoWidth/videoHeightが設定され、drawImageが可能になります。 
+                await new Promise((resolve) => { 
+                    video.onloadedmetadata = () => { 
+                        video.play(); resolve();
+                    }; 
+                }); cameraActive = true; // 3. スキャンループの開始 
+                scanQRCodeFromCamera(); 
+            } catch (error) { 
+                console.error('カメラアクセスエラー:', error); 
+                showScanMessage('❌ カメラへのアクセスが拒否されました', 'error'); 
+            } 
         }
 
         function stopCamera() {
