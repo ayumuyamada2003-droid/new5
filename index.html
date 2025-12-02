@@ -753,11 +753,16 @@
         let adminLoggedIn = false;
         let cameraActive = false;
         let videoStream = null;
+        const STORAGE_KEYS = {
+            participants: 'participants',
+            entryLog: 'entryLog'
+        };
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             setupEventListeners();
             loadFromLocalStorage();
+            refreshDataFromServer();
             updateStats();
         });
 
@@ -794,6 +799,7 @@
                 document.getElementById('participantSection').classList.add('hidden');
                 document.getElementById('adminSection').classList.add('active');
                 document.getElementById('adminPassword').value = '';
+                refreshDataFromServer(true);
             } else {
                 const errorEl = document.getElementById('loginError');
                 errorEl.textContent = 'パスワードが正しくありません';
@@ -848,6 +854,7 @@
 
             participants.push(participant);
             saveToLocalStorage();
+            syncRegistrationToServer(participant);
 
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(participantId)}`;
             document.getElementById('qrCodeImage').src = qrUrl;
@@ -855,11 +862,6 @@
 
             document.getElementById('registrationForm').style.display = 'none';
             document.getElementById('qrCodeSection').classList.remove('hidden');
-
-            if (GOOGLE_SHEETS_WEB_APP_URL) {
-                sendToGoogleSheets('registerParticipant', participant);
-            }
-
             updateStats();
         }
 
@@ -871,7 +873,10 @@
 
                 videoStream = stream;
                 const video = document.getElementById('videoPreview');
+                video.setAttribute('playsinline', 'true');
+                video.setAttribute('autoplay', 'true');
                 video.srcObject = stream;
+                await video.play();
                 video.classList.remove('hidden');
 
                 document.getElementById('startCameraBtn').style.display = 'none';
@@ -905,6 +910,11 @@
             const video = document.getElementById('videoPreview');
             const canvas = document.getElementById('canvasPreview');
             const ctx = canvas.getContext('2d');
+
+            if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                requestAnimationFrame(scanQRCodeFromCamera);
+                return;
+            }
 
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -980,14 +990,7 @@
 
             updateEntryLog();
             updateStats();
-
-            if (GOOGLE_SHEETS_WEB_APP_URL) {
-                sendToGoogleSheets('recordEntry', {
-                    participantId: scannedId,
-                    name: participant.name,
-                    scanTime: scanTime
-                });
-            }
+            syncEntryToServer(scannedId, participant.name, scanTime);
         }
 
         function showScanMessage(message, type) {
@@ -1106,13 +1109,13 @@
         }
 
         function saveToLocalStorage() {
-            localStorage.setItem('participants', JSON.stringify(participants));
-            localStorage.setItem('entryLog', JSON.stringify(entryLog));
+            localStorage.setItem(STORAGE_KEYS.participants, JSON.stringify(participants));
+            localStorage.setItem(STORAGE_KEYS.entryLog, JSON.stringify(entryLog));
         }
 
         function loadFromLocalStorage() {
-            const savedParticipants = localStorage.getItem('participants');
-            const savedEntryLog = localStorage.getItem('entryLog');
+            const savedParticipants = localStorage.getItem(STORAGE_KEYS.participants);
+            const savedEntryLog = localStorage.getItem(STORAGE_KEYS.entryLog);
 
             if (savedParticipants) {
                 participants = JSON.parse(savedParticipants);
@@ -1133,10 +1136,88 @@
                 ...data
             };
 
-            fetch(GOOGLE_SHEETS_WEB_APP_URL, {
+            return fetch(GOOGLE_SHEETS_WEB_APP_URL, {
                 method: 'POST',
                 body: JSON.stringify(payload)
-            }).catch(err => console.log('Google Sheets sync failed:', err));
+            });
+        }
+
+        async function syncRegistrationToServer(participant) {
+            if (!GOOGLE_SHEETS_WEB_APP_URL) return;
+            try {
+                await sendToGoogleSheets('registerParticipant', participant);
+            } catch (err) {
+                console.log('Google Sheets sync failed:', err);
+            }
+        }
+
+        async function syncEntryToServer(participantId, name, scanTime) {
+            if (!GOOGLE_SHEETS_WEB_APP_URL) return;
+            try {
+                await sendToGoogleSheets('recordEntry', {
+                    participantId,
+                    name,
+                    scanTime
+                });
+            } catch (err) {
+                console.log('Google Sheets sync failed:', err);
+            }
+        }
+
+        async function refreshDataFromServer(showStatus = false) {
+            if (!GOOGLE_SHEETS_WEB_APP_URL) return;
+
+            try {
+                const remoteData = await fetchRemoteData();
+
+                if (!remoteData || !Array.isArray(remoteData.participants)) {
+                    if (showStatus) showScanMessage('クラウドデータの取得に失敗しました', 'warning');
+                    return;
+                }
+
+                participants = normalizeParticipants(remoteData.participants);
+                entryLog = Array.isArray(remoteData.entryLog) ? remoteData.entryLog : [];
+
+                const scannedIds = new Set(entryLog.map(e => e.participantId));
+                participants = participants.map(p => ({
+                    ...p,
+                    scanned: p.scanned || scannedIds.has(p.id)
+                }));
+
+                saveToLocalStorage();
+                updateEntryLog();
+                updateStats();
+
+                if (showStatus) showScanMessage('クラウドデータを最新化しました', 'success');
+            } catch (error) {
+                console.error('クラウドデータの読み込みに失敗しました:', error);
+                if (showStatus) showScanMessage('クラウドデータの取得に失敗しました', 'warning');
+            }
+        }
+
+        async function fetchRemoteData() {
+            const response = await fetch(GOOGLE_SHEETS_WEB_APP_URL, {
+                method: 'POST',
+                body: JSON.stringify({ action: 'fetchData' })
+            });
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        }
+
+        function normalizeParticipants(list) {
+            return list.map(p => {
+                const scannedValue = (p.scanned === true || p.scanned === 'true' || p.scanned === 'TRUE' || p.scanned === '1' || p.scanned === 1 || p.scanned === '○');
+                return {
+                    id: p.id,
+                    name: p.name,
+                    email: p.email,
+                    grade: p.grade,
+                    notes: p.notes || '',
+                    registeredAt: p.registeredAt || '',
+                    scanned: scannedValue
+                };
+            });
         }
     </script>
 </body>
